@@ -201,7 +201,6 @@ func (c *Context) Decode(tokens []int32) error {
 		batchTokens[i] = C.llama_token(tokens[i])
 		batchPos[i] = C.llama_pos(i)
 		batchNSeqID[i] = 1
-		batchSeqID[i] = (*C.llama_seq_id)(C.malloc(C.sizeof_int32_t))
 		*batchSeqID[i] = 0
 		if i == n-1 {
 			batchLogits[i] = 1 // only compute logits for last token
@@ -209,13 +208,6 @@ func (c *Context) Decode(tokens []int32) error {
 			batchLogits[i] = 0
 		}
 	}
-
-	// Free the seq_id allocations after decode
-	defer func() {
-		for i := 0; i < n; i++ {
-			C.free(unsafe.Pointer(batchSeqID[i]))
-		}
-	}()
 
 	rc := C.llama_decode(c.ctx, batch)
 	if rc != 0 {
@@ -246,10 +238,8 @@ func (c *Context) decodeSingle(token int32, pos int) error {
 	batchTokens[0] = C.llama_token(token)
 	batchPos[0] = C.llama_pos(pos)
 	batchNSeqID[0] = 1
-	batchSeqID[0] = (*C.llama_seq_id)(C.malloc(C.sizeof_int32_t))
 	*batchSeqID[0] = 0
 	batchLogits[0] = 1
-	defer C.free(unsafe.Pointer(batchSeqID[0]))
 
 	rc := C.llama_decode(c.ctx, batch)
 	if rc != 0 {
