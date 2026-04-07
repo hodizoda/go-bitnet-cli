@@ -1,5 +1,7 @@
 package bitnet
 
+import "github.com/tmc/langchaingo/llms"
+
 // modelConfig holds configuration for loading a model.
 type modelConfig struct {
 	nGPULayers int
@@ -71,4 +73,52 @@ func WithTopP(p float32) ContextOption {
 // WithSeed sets the random seed for sampling.
 func WithSeed(s uint32) ContextOption {
 	return func(c *contextConfig) { c.seed = s }
+}
+
+// llmConfig holds configuration for the LangChainGo LLM adapter.
+type llmConfig struct {
+	contextSize    uint32
+	batchSize      uint32
+	temperature    float32
+	topP           float32
+	maxTokens      int
+	chatTemplateFn func(messages []llms.MessageContent) string
+}
+
+func defaultLLMConfig() llmConfig {
+	return llmConfig{
+		contextSize: 2048,
+		batchSize:   512,
+		temperature: 0.7,
+		topP:        0.9,
+		maxTokens:   256,
+	}
+}
+
+// Option configures the LangChainGo LLM adapter.
+type Option func(*llmConfig)
+
+// WithLLMTemperature sets the sampling temperature for the LLM adapter.
+func WithLLMTemperature(t float32) Option {
+	return func(c *llmConfig) { c.temperature = t }
+}
+
+// WithLLMTopP sets the top-p sampling threshold for the LLM adapter.
+func WithLLMTopP(p float32) Option {
+	return func(c *llmConfig) { c.topP = p }
+}
+
+// WithLLMContextSize sets the context window size for the LLM adapter.
+func WithLLMContextSize(n uint32) Option {
+	return func(c *llmConfig) { c.contextSize = n }
+}
+
+// WithMaxTokens sets the default maximum tokens for generation.
+func WithMaxTokens(n int) Option {
+	return func(c *llmConfig) { c.maxTokens = n }
+}
+
+// WithChatTemplate sets a custom chat template function.
+func WithChatTemplate(fn func([]llms.MessageContent) string) Option {
+	return func(c *llmConfig) { c.chatTemplateFn = fn }
 }

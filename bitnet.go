@@ -9,6 +9,7 @@ package bitnet
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"runtime"
@@ -276,6 +277,61 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 		generated = append(generated, tok)
 		if err := c.decodeSingle(tok, len(tokens)+len(generated)-1); err != nil {
 			return "", fmt.Errorf("bitnet: decode generated token: %w", err)
+		}
+	}
+
+	return c.Detokenize(generated), nil
+}
+
+// CompleteStreaming generates text token by token, calling onToken for each.
+// Returns early if ctx is cancelled.
+func (c *Context) CompleteStreaming(
+	ctx context.Context,
+	prompt string,
+	maxTokens int,
+	onToken func(token string) error,
+) (string, error) {
+	tokens, err := c.Tokenize(prompt)
+	if err != nil {
+		return "", fmt.Errorf("bitnet: tokenize: %w", err)
+	}
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("bitnet: empty prompt after tokenization")
+	}
+
+	if err := c.Decode(tokens); err != nil {
+		return "", fmt.Errorf("bitnet: decode prompt: %w", err)
+	}
+
+	eosToken := int32(C.llama_token_eos(c.model.model))
+
+	var generated []int32
+	for i := 0; i < maxTokens; i++ {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return c.Detokenize(generated), ctx.Err()
+		default:
+		}
+
+		tok, err := c.Sample()
+		if err != nil {
+			return c.Detokenize(generated), fmt.Errorf("bitnet: sample: %w", err)
+		}
+		if tok == eosToken {
+			break
+		}
+		generated = append(generated, tok)
+
+		piece := c.Detokenize([]int32{tok})
+		if onToken != nil {
+			if err := onToken(piece); err != nil {
+				return c.Detokenize(generated), err
+			}
+		}
+
+		if err := c.decodeSingle(tok, len(tokens)+len(generated)-1); err != nil {
+			return c.Detokenize(generated), fmt.Errorf("bitnet: decode generated token: %w", err)
 		}
 	}
 
