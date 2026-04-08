@@ -20,23 +20,25 @@ func main() {
 	mode := flag.String("mode", "chat", "mode: chat or bench")
 	prompt := flag.String("prompt", "Explain quantum computing in one paragraph.", "prompt for bench mode")
 	maxTokens := flag.Int("max-tokens", 128, "maximum tokens to generate")
+	ctxSize := flag.Int("ctx-size", 0, "context window size in tokens (0 = model's native size)")
 	temp := flag.Float64("temp", 0.7, "sampling temperature")
 	flag.Parse()
 
 	switch *mode {
 	case "chat":
-		runChat(*modelPath, *maxTokens, float32(*temp))
+		runChat(*modelPath, *maxTokens, uint32(*ctxSize), float32(*temp))
 	case "bench":
-		runBench(*modelPath, *prompt, *maxTokens, float32(*temp))
+		runBench(*modelPath, *prompt, *maxTokens, uint32(*ctxSize), float32(*temp))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode: %s (use chat or bench)\n", *mode)
 		os.Exit(1)
 	}
 }
 
-func runChat(modelPath string, maxTokens int, temp float32) {
+func runChat(modelPath string, maxTokens int, ctxSize uint32, temp float32) {
 	llm, err := bitnet.New(modelPath,
 		bitnet.WithMaxTokens(maxTokens),
+		bitnet.WithLLMContextSize(ctxSize),
 		bitnet.WithLLMTemperature(temp),
 	)
 	if err != nil {
@@ -79,8 +81,11 @@ func runChat(modelPath string, maxTokens int, temp float32) {
 			}),
 		)
 		fmt.Println()
-		if err != nil {
-			// If context exceeded, trim oldest messages (keep first system msg if any)
+
+		contextFull := err != nil && strings.Contains(err.Error(), "context window full")
+
+		if err != nil && !contextFull {
+			// Prompt itself too large — trim oldest messages and retry
 			if strings.Contains(err.Error(), "exceeds context size") {
 				fmt.Fprintf(os.Stderr, "(context full, trimming old messages)\n")
 				start := 0
@@ -97,22 +102,38 @@ func runChat(modelPath string, maxTokens int, temp float32) {
 			continue
 		}
 
-		// Add assistant response to history
-		if len(resp.Choices) > 0 {
+		if contextFull {
+			fmt.Fprintf(os.Stderr, "\n(context window full — response was cut short, trimming old messages)\n")
+			start := 0
+			if len(history) > 0 && history[0].Role == llms.ChatMessageTypeSystem {
+				start = 1
+			}
+			if len(history)-start > 2 {
+				history = append(history[:start], history[start+2:]...)
+			}
+		}
+
+		// Add assistant response to history (even if truncated by context limit)
+		content := ""
+		if resp != nil && len(resp.Choices) > 0 {
+			content = resp.Choices[0].Content
+		}
+		if content != "" {
 			history = append(history, llms.MessageContent{
 				Role:  llms.ChatMessageTypeAI,
-				Parts: []llms.ContentPart{llms.TextContent{Text: resp.Choices[0].Content}},
+				Parts: []llms.ContentPart{llms.TextContent{Text: content}},
 			})
 		}
 	}
 }
 
-func runBench(modelPath, prompt string, maxTokens int, temp float32) {
+func runBench(modelPath, prompt string, maxTokens int, ctxSize uint32, temp float32) {
 	fmt.Printf("Loading model: %s\n", modelPath)
 	loadStart := time.Now()
 
 	llm, err := bitnet.New(modelPath,
 		bitnet.WithMaxTokens(maxTokens),
+		bitnet.WithLLMContextSize(ctxSize),
 		bitnet.WithLLMTemperature(temp),
 	)
 	if err != nil {

@@ -97,18 +97,23 @@ func (l *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	}
 
 	result, err := l.bCtx.CompleteStreaming(ctx, prompt, maxTokens, streamFn)
-	if err != nil {
+	if err != nil && err != ErrContextFull {
 		return nil, err
+	}
+
+	stopReason := "stop"
+	if err == ErrContextFull {
+		stopReason = "length"
 	}
 
 	return &llms.ContentResponse{
 		Choices: []*llms.ContentChoice{
 			{
 				Content:    result,
-				StopReason: "stop",
+				StopReason: stopReason,
 			},
 		},
-	}, nil
+	}, err
 }
 
 // formatMessages converts messages to a ChatML-formatted prompt string.

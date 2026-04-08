@@ -86,11 +86,21 @@ func (m *Model) Close() {
 	runtime.SetFinalizer(m, nil)
 }
 
+// TrainContextSize returns the model's native training context size from GGUF metadata.
+func (m *Model) TrainContextSize() int {
+	return int(C.llama_n_ctx_train(m.model))
+}
+
 // NewContext creates an inference context from the model.
+// If contextSize is 0, the model's native training context size is used.
 func (m *Model) NewContext(opts ...ContextOption) (*Context, error) {
 	cfg := defaultContextConfig()
 	for _, o := range opts {
 		o(&cfg)
+	}
+
+	if cfg.contextSize == 0 {
+		cfg.contextSize = uint32(C.llama_n_ctx_train(m.model))
 	}
 
 	params := C.llama_context_default_params()
@@ -259,6 +269,9 @@ func (c *Context) ContextSize() int {
 	return int(C.llama_n_ctx(c.ctx))
 }
 
+// ErrContextFull is returned when generation stops because the context window is full.
+var ErrContextFull = fmt.Errorf("bitnet: context window full")
+
 // Complete runs auto-regressive generation given a prompt.
 func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 	tokens, err := c.Tokenize(prompt)
@@ -268,8 +281,8 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 	if len(tokens) == 0 {
 		return "", fmt.Errorf("bitnet: empty prompt after tokenization")
 	}
-	if len(tokens)+maxTokens > c.ContextSize() {
-		return "", fmt.Errorf("bitnet: prompt (%d tokens) + max_tokens (%d) exceeds context size (%d)", len(tokens), maxTokens, c.ContextSize())
+	if len(tokens) >= c.ContextSize() {
+		return "", fmt.Errorf("bitnet: prompt (%d tokens) exceeds context size (%d)", len(tokens), c.ContextSize())
 	}
 
 	if err := c.Decode(tokens); err != nil {
@@ -299,7 +312,13 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 			return result, nil
 		}
 
-		if err := c.decodeSingle(tok, len(tokens)+len(generated)-1); err != nil {
+		// Stop gracefully if next decode would exceed context
+		nextPos := len(tokens) + len(generated)
+		if nextPos >= c.ContextSize() {
+			return output.String(), ErrContextFull
+		}
+
+		if err := c.decodeSingle(tok, nextPos-1); err != nil {
 			return "", fmt.Errorf("bitnet: decode generated token: %w", err)
 		}
 	}
@@ -326,8 +345,8 @@ func (c *Context) CompleteStreaming(
 	if len(tokens) == 0 {
 		return "", fmt.Errorf("bitnet: empty prompt after tokenization")
 	}
-	if len(tokens)+maxTokens > c.ContextSize() {
-		return "", fmt.Errorf("bitnet: prompt (%d tokens) + max_tokens (%d) exceeds context size (%d)", len(tokens), maxTokens, c.ContextSize())
+	if len(tokens) >= c.ContextSize() {
+		return "", fmt.Errorf("bitnet: prompt (%d tokens) exceeds context size (%d)", len(tokens), c.ContextSize())
 	}
 
 	if err := c.Decode(tokens); err != nil {
@@ -382,7 +401,17 @@ func (c *Context) CompleteStreaming(
 			streamed = safePoint
 		}
 
-		if err := c.decodeSingle(tok, len(tokens)+len(generated)-1); err != nil {
+		// Stop gracefully if next decode would exceed context
+		nextPos := len(tokens) + len(generated)
+		if nextPos >= c.ContextSize() {
+			// Flush held-back bytes before returning
+			if len(fullText) > streamed && onToken != nil {
+				onToken(fullText[streamed:])
+			}
+			return fullText, ErrContextFull
+		}
+
+		if err := c.decodeSingle(tok, nextPos-1); err != nil {
 			return all.String(), fmt.Errorf("bitnet: decode generated token: %w", err)
 		}
 	}

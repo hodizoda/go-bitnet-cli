@@ -39,7 +39,7 @@ type contextConfig struct {
 
 func defaultContextConfig() contextConfig {
 	return contextConfig{
-		contextSize: 2048,
+		contextSize: 0, // 0 = use model's native training context size
 		batchSize:   512,
 		temperature: 0.7,
 		topP:        0.9,
@@ -87,7 +87,7 @@ type llmConfig struct {
 
 func defaultLLMConfig() llmConfig {
 	return llmConfig{
-		contextSize: 2048,
+		contextSize: 0, // 0 = use model's native training context size
 		batchSize:   512,
 		temperature: 0.7,
 		topP:        0.9,
