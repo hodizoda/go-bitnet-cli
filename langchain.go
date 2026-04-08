@@ -63,13 +63,13 @@ func (l *LLM) Call(ctx context.Context, prompt string, options ...llms.CallOptio
 		Parts: []llms.ContentPart{llms.TextContent{Text: prompt}},
 	}
 	resp, err := l.GenerateContent(ctx, []llms.MessageContent{msg}, options...)
-	if err != nil {
+	if err != nil && err != ErrContextFull {
 		return "", err
 	}
-	if len(resp.Choices) == 0 {
+	if resp == nil || len(resp.Choices) == 0 {
 		return "", fmt.Errorf("bitnet: empty response")
 	}
-	return resp.Choices[0].Content, nil
+	return resp.Choices[0].Content, err
 }
 
 // GenerateContent implements the llms.Model interface.
@@ -96,7 +96,13 @@ func (l *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		}
 	}
 
-	result, err := l.bCtx.CompleteStreaming(ctx, prompt, maxTokens, streamFn)
+	// Merge configured stop strings with any from call options
+	stopStrings := l.cfg.stopStrings
+	if len(opts.StopWords) > 0 {
+		stopStrings = append(stopStrings, opts.StopWords...)
+	}
+
+	result, err := l.bCtx.CompleteStreaming(ctx, prompt, maxTokens, stopStrings, streamFn)
 	if err != nil && err != ErrContextFull {
 		return nil, err
 	}
@@ -154,4 +160,30 @@ func chatMLRole(role llms.ChatMessageType) string {
 	default:
 		return "user"
 	}
+}
+
+// falcon3Template formats messages using the Falcon3-Instruct template.
+// Format: <|system|>\n{system}<|endoftext|>\n<|user|>\n{user}<|endoftext|>\n<|assistant|>\n
+func falcon3Template(messages []llms.MessageContent) string {
+	var sb strings.Builder
+	for _, msg := range messages {
+		switch msg.Role {
+		case llms.ChatMessageTypeSystem:
+			sb.WriteString("<|system|>\n")
+		case llms.ChatMessageTypeHuman:
+			sb.WriteString("<|user|>\n")
+		case llms.ChatMessageTypeAI:
+			sb.WriteString("<|assistant|>\n")
+		default:
+			sb.WriteString("<|user|>\n")
+		}
+		for _, part := range msg.Parts {
+			if tc, ok := part.(llms.TextContent); ok {
+				sb.WriteString(tc.Text)
+			}
+		}
+		sb.WriteString("<|endoftext|>\n")
+	}
+	sb.WriteString("<|assistant|>\n")
+	return sb.String()
 }

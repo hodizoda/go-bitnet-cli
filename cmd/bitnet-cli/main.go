@@ -21,26 +21,38 @@ func main() {
 	prompt := flag.String("prompt", "Explain quantum computing in one paragraph.", "prompt for bench mode")
 	maxTokens := flag.Int("max-tokens", 128, "maximum tokens to generate")
 	ctxSize := flag.Int("ctx-size", 0, "context window size in tokens (0 = model's native size)")
+	falcon3 := flag.Bool("falcon3", false, "use Falcon3-Instruct chat template and stop strings")
+	stop := flag.String("stop", "", "comma-separated stop strings (overrides defaults)")
 	temp := flag.Float64("temp", 0.7, "sampling temperature")
 	flag.Parse()
 
+	var extraOpts []bitnet.Option
+	if *falcon3 {
+		extraOpts = append(extraOpts, bitnet.WithFalcon3Template())
+	}
+	if *stop != "" {
+		extraOpts = append(extraOpts, bitnet.WithStopStrings(strings.Split(*stop, ",")))
+	}
+
 	switch *mode {
 	case "chat":
-		runChat(*modelPath, *maxTokens, uint32(*ctxSize), float32(*temp))
+		runChat(*modelPath, *maxTokens, uint32(*ctxSize), float32(*temp), extraOpts)
 	case "bench":
-		runBench(*modelPath, *prompt, *maxTokens, uint32(*ctxSize), float32(*temp))
+		runBench(*modelPath, *prompt, *maxTokens, uint32(*ctxSize), float32(*temp), extraOpts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode: %s (use chat or bench)\n", *mode)
 		os.Exit(1)
 	}
 }
 
-func runChat(modelPath string, maxTokens int, ctxSize uint32, temp float32) {
-	llm, err := bitnet.New(modelPath,
+func runChat(modelPath string, maxTokens int, ctxSize uint32, temp float32, extraOpts []bitnet.Option) {
+	opts := []bitnet.Option{
 		bitnet.WithMaxTokens(maxTokens),
 		bitnet.WithLLMContextSize(ctxSize),
 		bitnet.WithLLMTemperature(temp),
-	)
+	}
+	opts = append(opts, extraOpts...)
+	llm, err := bitnet.New(modelPath, opts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading model: %v\n", err)
 		os.Exit(1)
@@ -127,15 +139,17 @@ func runChat(modelPath string, maxTokens int, ctxSize uint32, temp float32) {
 	}
 }
 
-func runBench(modelPath, prompt string, maxTokens int, ctxSize uint32, temp float32) {
+func runBench(modelPath, prompt string, maxTokens int, ctxSize uint32, temp float32, extraOpts []bitnet.Option) {
 	fmt.Printf("Loading model: %s\n", modelPath)
 	loadStart := time.Now()
 
-	llm, err := bitnet.New(modelPath,
+	opts := []bitnet.Option{
 		bitnet.WithMaxTokens(maxTokens),
 		bitnet.WithLLMContextSize(ctxSize),
 		bitnet.WithLLMTemperature(temp),
-	)
+	}
+	opts = append(opts, extraOpts...)
+	llm, err := bitnet.New(modelPath, opts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading model: %v\n", err)
 		os.Exit(1)

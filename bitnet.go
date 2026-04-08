@@ -273,7 +273,7 @@ func (c *Context) ContextSize() int {
 var ErrContextFull = fmt.Errorf("bitnet: context window full")
 
 // Complete runs auto-regressive generation given a prompt.
-func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
+func (c *Context) Complete(prompt string, maxTokens int, stopStrings []string) (string, error) {
 	tokens, err := c.Tokenize(prompt)
 	if err != nil {
 		return "", fmt.Errorf("bitnet: tokenize: %w", err)
@@ -305,11 +305,12 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 		piece := c.Detokenize([]int32{tok})
 		output.WriteString(piece)
 
-		// Stop on ChatML end-of-turn marker
-		if strings.Contains(output.String(), "<|im_end|>") {
-			// Trim the marker from output
-			result := strings.SplitN(output.String(), "<|im_end|>", 2)[0]
-			return result, nil
+		// Check all stop strings
+		text := output.String()
+		for _, ss := range stopStrings {
+			if idx := strings.Index(text, ss); idx >= 0 {
+				return text[:idx], nil
+			}
 		}
 
 		// Stop gracefully if next decode would exceed context
@@ -329,13 +330,13 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 // CompleteStreaming generates text token by token, calling onToken for each.
 // Returns early if ctx is cancelled or a stop string is detected.
 //
-// Stop detection: the last len(stopStr)-1 bytes are held back from streaming
-// until we're sure they aren't the start of the stop string. This handles
-// stop strings split across any number of tokens.
+// Stop detection: the last N-1 bytes (where N = longest stop string) are held
+// back from streaming until we're sure they aren't the start of a stop string.
 func (c *Context) CompleteStreaming(
 	ctx context.Context,
 	prompt string,
 	maxTokens int,
+	stopStrings []string,
 	onToken func(token string) error,
 ) (string, error) {
 	tokens, err := c.Tokenize(prompt)
@@ -354,8 +355,14 @@ func (c *Context) CompleteStreaming(
 	}
 
 	eosToken := int32(C.llama_token_eos(c.model.model))
-	const stopStr = "<|im_end|>"
-	margin := len(stopStr) - 1 // hold back this many bytes
+
+	// Holdback margin = longest stop string - 1
+	margin := 0
+	for _, ss := range stopStrings {
+		if len(ss)-1 > margin {
+			margin = len(ss) - 1
+		}
+	}
 
 	var generated []int32
 	var all strings.Builder // all generated text
@@ -381,15 +388,16 @@ func (c *Context) CompleteStreaming(
 		all.WriteString(piece)
 		fullText := all.String()
 
-		// Check for stop string in full text
-		if idx := strings.Index(fullText, stopStr); idx >= 0 {
-			// Stream everything before the stop that hasn't been streamed
-			if idx > streamed && onToken != nil {
-				if err := onToken(fullText[streamed:idx]); err != nil {
-					return fullText[:idx], err
+		// Check all stop strings in full text
+		for _, ss := range stopStrings {
+			if idx := strings.Index(fullText, ss); idx >= 0 {
+				if idx > streamed && onToken != nil {
+					if err := onToken(fullText[streamed:idx]); err != nil {
+						return fullText[:idx], err
+					}
 				}
+				return fullText[:idx], nil
 			}
-			return fullText[:idx], nil
 		}
 
 		// Stream up to the safe point: everything except the last 'margin' bytes

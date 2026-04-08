@@ -82,6 +82,7 @@ type llmConfig struct {
 	temperature    float32
 	topP           float32
 	maxTokens      int
+	stopStrings    []string
 	chatTemplateFn func(messages []llms.MessageContent) string
 }
 
@@ -92,6 +93,7 @@ func defaultLLMConfig() llmConfig {
 		temperature: 0.7,
 		topP:        0.9,
 		maxTokens:   256,
+		stopStrings: []string{"<|im_end|>"},
 	}
 }
 
@@ -118,7 +120,20 @@ func WithMaxTokens(n int) Option {
 	return func(c *llmConfig) { c.maxTokens = n }
 }
 
+// WithStopStrings sets the stop strings that end generation.
+func WithStopStrings(ss []string) Option {
+	return func(c *llmConfig) { c.stopStrings = ss }
+}
+
 // WithChatTemplate sets a custom chat template function.
 func WithChatTemplate(fn func([]llms.MessageContent) string) Option {
 	return func(c *llmConfig) { c.chatTemplateFn = fn }
+}
+
+// WithFalcon3Template configures the LLM for Falcon3-Instruct models.
+func WithFalcon3Template() Option {
+	return func(c *llmConfig) {
+		c.stopStrings = []string{"<|endoftext|>", "<|user|>"}
+		c.chatTemplateFn = falcon3Template
+	}
 }
