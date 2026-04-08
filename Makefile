@@ -23,10 +23,27 @@ patch:
 $(KERNELS_DST): $(KERNELS_SRC)
 	cp $< $@
 
+-include .env
+export HF_TOKEN
+
+DL = python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('$(1)', '$(2)', local_dir='$(3)')"
+
 models: models/bitnet-b1.58-2B-4T
 
 models/bitnet-b1.58-2B-4T:
-	huggingface-cli download microsoft/bitnet-b1.58-2B-4T-gguf --local-dir $@
+	$(call DL,microsoft/bitnet-b1.58-2B-4T-gguf,ggml-model-i2_s.gguf,$@)
+
+models/falcon3-10b:
+	$(call DL,tiiuae/Falcon3-10B-Instruct-1.58bit-GGUF,ggml-model-i2_s.gguf,$@)
+
+models/falcon3-7b:
+	$(call DL,tiiuae/Falcon3-7B-Instruct-1.58bit-GGUF,ggml-model-i2_s.gguf,$@)
+
+models/falcon3-3b:
+	$(call DL,tiiuae/Falcon3-3B-Instruct-1.58bit-GGUF,ggml-model-i2_s.gguf,$@)
+
+models/llama3-8b:
+	$(call DL,huyrua1996/Llama3-8B-1.58-100B-tokens-bitnet,ggml-model-i2_s.gguf,$@)
 
 test: libs
 	go test -v -count=1 ./...

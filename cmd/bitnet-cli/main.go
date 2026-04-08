@@ -48,6 +48,8 @@ func runChat(modelPath string, maxTokens int, temp float32) {
 	fmt.Println("BitNet chat (type 'quit' to exit)")
 	scanner := bufio.NewScanner(os.Stdin)
 
+	var history []llms.MessageContent
+
 	for {
 		fmt.Print("\n> ")
 		if !scanner.Scan() {
@@ -61,7 +63,16 @@ func runChat(modelPath string, maxTokens int, temp float32) {
 			break
 		}
 
-		_, err := llm.Call(context.Background(), line,
+		// Add user message to history
+		history = append(history, llms.MessageContent{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: line}},
+		})
+
+		// Clear KV cache so the full conversation is re-processed
+		llm.Reset()
+
+		resp, err := llm.GenerateContent(context.Background(), history,
 			llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
 				fmt.Print(string(chunk))
 				return nil
@@ -69,7 +80,29 @@ func runChat(modelPath string, maxTokens int, temp float32) {
 		)
 		fmt.Println()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			// If context exceeded, trim oldest messages (keep first system msg if any)
+			if strings.Contains(err.Error(), "exceeds context size") {
+				fmt.Fprintf(os.Stderr, "(context full, trimming old messages)\n")
+				start := 0
+				if len(history) > 0 && history[0].Role == llms.ChatMessageTypeSystem {
+					start = 1
+				}
+				// Drop oldest pair (user+assistant)
+				if len(history)-start > 2 {
+					history = append(history[:start], history[start+2:]...)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			}
+			continue
+		}
+
+		// Add assistant response to history
+		if len(resp.Choices) > 0 {
+			history = append(history, llms.MessageContent{
+				Role:  llms.ChatMessageTypeAI,
+				Parts: []llms.ContentPart{llms.TextContent{Text: resp.Choices[0].Content}},
+			})
 		}
 	}
 }

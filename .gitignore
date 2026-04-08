@@ -3,3 +3,5 @@ models/
 *.a
 *.o
 *.so
+.env
+/bitnet-cli

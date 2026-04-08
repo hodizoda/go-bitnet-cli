@@ -130,6 +130,11 @@ func (c *Context) Close() {
 	runtime.SetFinalizer(c, nil)
 }
 
+// Reset clears the KV cache, allowing the context to be reused for a new conversation.
+func (c *Context) Reset() {
+	C.llama_kv_cache_clear(c.ctx)
+}
+
 // Tokenize converts text to token IDs.
 func (c *Context) Tokenize(text string) ([]int32, error) {
 	cText := C.CString(text)
@@ -249,6 +254,11 @@ func (c *Context) decodeSingle(token int32, pos int) error {
 	return nil
 }
 
+// ContextSize returns the context window size (n_ctx).
+func (c *Context) ContextSize() int {
+	return int(C.llama_n_ctx(c.ctx))
+}
+
 // Complete runs auto-regressive generation given a prompt.
 func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 	tokens, err := c.Tokenize(prompt)
@@ -258,6 +268,9 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 	if len(tokens) == 0 {
 		return "", fmt.Errorf("bitnet: empty prompt after tokenization")
 	}
+	if len(tokens)+maxTokens > c.ContextSize() {
+		return "", fmt.Errorf("bitnet: prompt (%d tokens) + max_tokens (%d) exceeds context size (%d)", len(tokens), maxTokens, c.ContextSize())
+	}
 
 	if err := c.Decode(tokens); err != nil {
 		return "", fmt.Errorf("bitnet: decode prompt: %w", err)
@@ -266,6 +279,7 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 	eosToken := int32(C.llama_token_eos(c.model.model))
 
 	var generated []int32
+	var output strings.Builder
 	for i := 0; i < maxTokens; i++ {
 		tok, err := c.Sample()
 		if err != nil {
@@ -275,16 +289,30 @@ func (c *Context) Complete(prompt string, maxTokens int) (string, error) {
 			break
 		}
 		generated = append(generated, tok)
+		piece := c.Detokenize([]int32{tok})
+		output.WriteString(piece)
+
+		// Stop on ChatML end-of-turn marker
+		if strings.Contains(output.String(), "<|im_end|>") {
+			// Trim the marker from output
+			result := strings.SplitN(output.String(), "<|im_end|>", 2)[0]
+			return result, nil
+		}
+
 		if err := c.decodeSingle(tok, len(tokens)+len(generated)-1); err != nil {
 			return "", fmt.Errorf("bitnet: decode generated token: %w", err)
 		}
 	}
 
-	return c.Detokenize(generated), nil
+	return output.String(), nil
 }
 
 // CompleteStreaming generates text token by token, calling onToken for each.
-// Returns early if ctx is cancelled.
+// Returns early if ctx is cancelled or a stop string is detected.
+//
+// Stop detection: the last len(stopStr)-1 bytes are held back from streaming
+// until we're sure they aren't the start of the stop string. This handles
+// stop strings split across any number of tokens.
 func (c *Context) CompleteStreaming(
 	ctx context.Context,
 	prompt string,
@@ -298,25 +326,32 @@ func (c *Context) CompleteStreaming(
 	if len(tokens) == 0 {
 		return "", fmt.Errorf("bitnet: empty prompt after tokenization")
 	}
+	if len(tokens)+maxTokens > c.ContextSize() {
+		return "", fmt.Errorf("bitnet: prompt (%d tokens) + max_tokens (%d) exceeds context size (%d)", len(tokens), maxTokens, c.ContextSize())
+	}
 
 	if err := c.Decode(tokens); err != nil {
 		return "", fmt.Errorf("bitnet: decode prompt: %w", err)
 	}
 
 	eosToken := int32(C.llama_token_eos(c.model.model))
+	const stopStr = "<|im_end|>"
+	margin := len(stopStr) - 1 // hold back this many bytes
 
 	var generated []int32
+	var all strings.Builder // all generated text
+	var streamed int        // how many bytes of 'all' we've streamed
+
 	for i := 0; i < maxTokens; i++ {
-		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			return c.Detokenize(generated), ctx.Err()
+			return all.String()[:streamed], ctx.Err()
 		default:
 		}
 
 		tok, err := c.Sample()
 		if err != nil {
-			return c.Detokenize(generated), fmt.Errorf("bitnet: sample: %w", err)
+			return all.String(), fmt.Errorf("bitnet: sample: %w", err)
 		}
 		if tok == eosToken {
 			break
@@ -324,16 +359,39 @@ func (c *Context) CompleteStreaming(
 		generated = append(generated, tok)
 
 		piece := c.Detokenize([]int32{tok})
-		if onToken != nil {
-			if err := onToken(piece); err != nil {
-				return c.Detokenize(generated), err
+		all.WriteString(piece)
+		fullText := all.String()
+
+		// Check for stop string in full text
+		if idx := strings.Index(fullText, stopStr); idx >= 0 {
+			// Stream everything before the stop that hasn't been streamed
+			if idx > streamed && onToken != nil {
+				if err := onToken(fullText[streamed:idx]); err != nil {
+					return fullText[:idx], err
+				}
 			}
+			return fullText[:idx], nil
+		}
+
+		// Stream up to the safe point: everything except the last 'margin' bytes
+		safePoint := len(fullText) - margin
+		if safePoint > streamed && onToken != nil {
+			if err := onToken(fullText[streamed:safePoint]); err != nil {
+				return fullText[:safePoint], err
+			}
+			streamed = safePoint
 		}
 
 		if err := c.decodeSingle(tok, len(tokens)+len(generated)-1); err != nil {
-			return c.Detokenize(generated), fmt.Errorf("bitnet: decode generated token: %w", err)
+			return all.String(), fmt.Errorf("bitnet: decode generated token: %w", err)
 		}
 	}
 
-	return c.Detokenize(generated), nil
+	// Flush remaining held-back bytes (no stop string found)
+	fullText := all.String()
+	if len(fullText) > streamed && onToken != nil {
+		onToken(fullText[streamed:])
+	}
+
+	return fullText, nil
 }

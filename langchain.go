@@ -51,6 +51,11 @@ func (l *LLM) Close() error {
 	return nil
 }
 
+// Reset clears the KV cache for a new conversation.
+func (l *LLM) Reset() {
+	l.bCtx.Reset()
+}
+
 // Call implements the simplified text-in/text-out interface.
 func (l *LLM) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
 	msg := llms.MessageContent{
