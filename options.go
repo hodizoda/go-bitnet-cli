@@ -133,7 +133,7 @@ func WithChatTemplate(fn func([]llms.MessageContent) string) Option {
 // WithFalcon3Template configures the LLM for Falcon3-Instruct models.
 func WithFalcon3Template() Option {
 	return func(c *llmConfig) {
-		c.stopStrings = []string{"<|endoftext|>", "<|user|>"}
+		c.stopStrings = []string{"<|endoftext|>", "<|eot_id|>", "<|user|>"}
 		c.chatTemplateFn = falcon3Template
 	}
 }
